@@ -26,7 +26,23 @@ import {
   CheckCircle,
   Lock,
   Loader2,
+  PieChart,
+  Link2,
+  Hash,
 } from "lucide-react";
+import {
+  PieChart as RechartsPieChart,
+  Pie,
+  Cell,
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+} from "recharts";
 import ApiService, {
   URLResponse,
   URLDetailResponse,
@@ -414,13 +430,103 @@ function App() {
     return <LoginForm onLogin={handleLogin} />;
   }
 
-  // Detail view
+  // Enhanced Detail view with interactive charts
   if (currentView === "detail" && selectedResult) {
     const brokenLinks = selectedResultDetail?.broken_links || [];
+
+    // Prepare data for Link Distribution Chart
+    const linkDistributionData = [
+      {
+        name: "Internal Links",
+        value: selectedResult.internalLinks,
+        color: "#3b82f6", // Blue
+      },
+      {
+        name: "External Links",
+        value: selectedResult.externalLinks,
+        color: "#10b981", // Green
+      },
+      {
+        name: "Broken Links",
+        value: brokenLinks.length,
+        color: "#ef4444", // Red
+      },
+    ].filter((item) => item.value > 0); // Only show categories with data
+
+    // Prepare data for Heading Structure Chart
+    const headingData = [
+      {
+        heading: "H1",
+        count: selectedResult.headingCounts.h1,
+        color: "#8b5cf6",
+      },
+      {
+        heading: "H2",
+        count: selectedResult.headingCounts.h2,
+        color: "#06b6d4",
+      },
+      {
+        heading: "H3",
+        count: selectedResult.headingCounts.h3,
+        color: "#10b981",
+      },
+      {
+        heading: "H4",
+        count: selectedResult.headingCounts.h4,
+        color: "#f59e0b",
+      },
+      {
+        heading: "H5",
+        count: selectedResult.headingCounts.h5,
+        color: "#ef4444",
+      },
+      {
+        heading: "H6",
+        count: selectedResult.headingCounts.h6,
+        color: "#8b5cf6",
+      },
+    ].filter((item) => item.count > 0); // Only show headings that exist
+
+    // Custom tooltip for pie chart
+    const PieTooltip = ({ active, payload }: any) => {
+      if (active && payload && payload.length) {
+        const data = payload[0];
+        const total = linkDistributionData.reduce(
+          (sum, item) => sum + item.value,
+          0
+        );
+        const percentage = ((data.value / total) * 100).toFixed(1);
+        return (
+          <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
+            <p className="font-medium">{data.name}</p>
+            <p className="text-sm text-gray-600">
+              {data.value} links ({percentage}%)
+            </p>
+          </div>
+        );
+      }
+      return null;
+    };
+
+    // Custom tooltip for bar chart
+    const BarTooltip = ({ active, payload, label }: any) => {
+      if (active && payload && payload.length) {
+        return (
+          <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
+            <p className="font-medium">{label} Tags</p>
+            <p className="text-sm text-gray-600">
+              {payload[0].value} occurrences
+            </p>
+          </div>
+        );
+      }
+      return null;
+    };
 
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
         <div className="container mx-auto px-4 py-8">
+          {/* Header */}
           <div className="flex items-center justify-between mb-8">
             <div className="flex items-center gap-4">
               <Button variant="outline" onClick={handleBackToDashboard}>
@@ -431,7 +537,10 @@ function App() {
                 <h2 className="text-2xl font-bold text-slate-800">
                   {selectedResult.title}
                 </h2>
-                <p className="text-slate-600">{selectedResult.url}</p>
+                <p className="text-slate-600 flex items-center gap-2">
+                  <Link2 className="h-4 w-4" />
+                  {selectedResult.url}
+                </p>
               </div>
             </div>
             <Button variant="outline" onClick={handleLogout}>
@@ -439,41 +548,44 @@ function App() {
             </Button>
           </div>
 
-          {/* Overview Cards */}
+          {/* Quick Stats */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <Card>
+            <Card className="border-l-4 border-l-blue-500">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-gray-600">
+                <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                  <Hash className="h-4 w-4" />
                   HTML Version
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">
-                  {selectedResult.htmlVersion || "N/A"}
+                <div className="text-2xl font-bold text-blue-600">
+                  {selectedResult.htmlVersion || "HTML5"}
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="border-l-4 border-l-green-500">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-gray-600">
+                <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                  <Link2 className="h-4 w-4" />
                   Total Links
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">
+                <div className="text-2xl font-bold text-green-600">
                   {selectedResult.internalLinks + selectedResult.externalLinks}
                 </div>
-                <p className="text-xs text-gray-500">
-                  {selectedResult.internalLinks} internal,{" "}
+                <p className="text-xs text-gray-500 mt-1">
+                  {selectedResult.internalLinks} internal •{" "}
                   {selectedResult.externalLinks} external
                 </p>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="border-l-4 border-l-red-500">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-gray-600">
+                <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4" />
                   Broken Links
                 </CardTitle>
               </CardHeader>
@@ -481,12 +593,18 @@ function App() {
                 <div className="text-2xl font-bold text-red-600">
                   {brokenLinks.length}
                 </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  {brokenLinks.length === 0
+                    ? "All links working"
+                    : "Need attention"}
+                </p>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="border-l-4 border-l-purple-500">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-gray-600">
+                <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                  <CheckCircle className="h-4 w-4" />
                   Login Form
                 </CardTitle>
               </CardHeader>
@@ -510,79 +628,218 @@ function App() {
             </Card>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Chart placeholder */}
-            <Card>
+          {/* Enhanced Charts Section */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            {/* Link Distribution Chart */}
+            <Card className="shadow-lg">
               <CardHeader>
-                <CardTitle>Links Distribution</CardTitle>
+                <CardTitle className="flex items-center gap-2">
+                  <PieChart className="h-5 w-5 text-blue-600" />
+                  Link Distribution
+                </CardTitle>
                 <CardDescription>
-                  Internal vs External links breakdown
+                  Breakdown of internal, external, and broken links
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="h-64 flex items-center justify-center bg-gray-50 rounded">
-                  <div className="text-center">
-                    <BarChart3 className="h-12 w-12 text-gray-400 mx-auto mb-2" />
-                    <p className="text-gray-500">
-                      {selectedResult.internalLinks} internal,{" "}
-                      {selectedResult.externalLinks} external
-                    </p>
+                {linkDistributionData.length > 0 ? (
+                  <div className="h-80">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RechartsPieChart>
+                        <Pie
+                          data={linkDistributionData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={120}
+                          paddingAngle={5}
+                          dataKey="value"
+                        >
+                          {linkDistributionData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip content={<PieTooltip />} />
+                        <Legend />
+                      </RechartsPieChart>
+                    </ResponsiveContainer>
                   </div>
-                </div>
+                ) : (
+                  <div className="h-80 flex items-center justify-center text-gray-500">
+                    <div className="text-center">
+                      <Link2 className="h-12 w-12 mx-auto mb-2 text-gray-300" />
+                      <p>No link data available</p>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
-            <Card>
+            {/* Heading Structure Chart */}
+            <Card className="shadow-lg">
               <CardHeader>
-                <CardTitle>Heading Structure</CardTitle>
-                <CardDescription>Distribution of heading tags</CardDescription>
+                <CardTitle className="flex items-center gap-2">
+                  <BarChart3 className="h-5 w-5 text-purple-600" />
+                  Heading Structure
+                </CardTitle>
+                <CardDescription>
+                  Distribution of heading tags (H1-H6) across the page
+                </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3">
-                  {Object.entries(selectedResult.headingCounts).map(
-                    ([level, count]) => (
-                      <div
-                        key={level}
-                        className="flex items-center justify-between"
+                {headingData.length > 0 ? (
+                  <div className="h-80">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={headingData}
+                        margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
                       >
-                        <span className="text-sm font-medium">
-                          {level.toUpperCase()}
-                        </span>
-                        <span className="text-sm text-gray-600">{count}</span>
-                      </div>
-                    )
-                  )}
-                </div>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="heading" stroke="#666" fontSize={12} />
+                        <YAxis stroke="#666" fontSize={12} />
+                        <Tooltip content={<BarTooltip />} />
+                        <Bar
+                          dataKey="count"
+                          radius={[4, 4, 0, 0]}
+                          fill="#8b5cf6"
+                        >
+                          {headingData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="h-80 flex items-center justify-center text-gray-500">
+                    <div className="text-center">
+                      <Hash className="h-12 w-12 mx-auto mb-2 text-gray-300" />
+                      <p>No heading data available</p>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
 
-          {/* Broken Links */}
+          {/* Detailed Heading Breakdown */}
+          {headingData.length > 0 && (
+            <Card className="shadow-lg mb-6">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Hash className="h-5 w-5 text-indigo-600" />
+                  Detailed Heading Analysis
+                </CardTitle>
+                <CardDescription>
+                  SEO and accessibility insights for your heading structure
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                  {Object.entries(selectedResult.headingCounts).map(
+                    ([level, count]) => (
+                      <div
+                        key={level}
+                        className="text-center p-4 bg-gray-50 rounded-lg"
+                      >
+                        <div className="text-2xl font-bold text-gray-700 mb-1">
+                          {count}
+                        </div>
+                        <div className="text-sm font-medium text-gray-600 uppercase">
+                          {level}
+                        </div>
+                        <div
+                          className={`w-full h-2 rounded-full mt-2 ${
+                            count > 0
+                              ? "bg-gradient-to-r from-blue-400 to-purple-500"
+                              : "bg-gray-200"
+                          }`}
+                        />
+                      </div>
+                    )
+                  )}
+                </div>
+
+                {/* SEO Insights */}
+                <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+                  <h4 className="font-semibold text-blue-800 mb-2">
+                    SEO Insights:
+                  </h4>
+                  <div className="space-y-1 text-sm text-blue-700">
+                    {selectedResult.headingCounts.h1 === 0 && (
+                      <p>
+                        ⚠️ Missing H1 tag - Important for SEO and accessibility
+                      </p>
+                    )}
+                    {selectedResult.headingCounts.h1 > 1 && (
+                      <p>
+                        ⚠️ Multiple H1 tags found - Consider using only one H1
+                        per page
+                      </p>
+                    )}
+                    {selectedResult.headingCounts.h1 === 1 && (
+                      <p>✅ Good: Single H1 tag found</p>
+                    )}
+                    {Object.values(selectedResult.headingCounts).some(
+                      (count) => count > 0
+                    ) ? (
+                      <p>
+                        ✅ Heading structure present - Good for content
+                        hierarchy
+                      </p>
+                    ) : (
+                      <p>
+                        ⚠️ No headings found - Consider adding headings for
+                        better structure
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Broken Links Section */}
           {brokenLinks.length > 0 && (
-            <Card className="mt-6">
+            <Card className="shadow-lg">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <AlertCircle className="h-5 w-5 text-red-600" />
                   Broken Links ({brokenLinks.length})
                 </CardTitle>
                 <CardDescription>
-                  Links that returned error status codes
+                  Links that returned error status codes and need attention
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3">
+                <div className="space-y-3 max-h-96 overflow-y-auto">
                   {brokenLinks.map((link, index) => (
                     <div
                       key={index}
-                      className="flex items-center justify-between p-3 bg-red-50 rounded-lg"
+                      className="flex items-center justify-between p-4 bg-red-50 rounded-lg border border-red-100 hover:bg-red-100 transition-colors"
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="px-2 py-1 bg-red-600 text-white rounded text-xs font-medium">
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <span
+                          className={`px-3 py-1 rounded-full text-white text-xs font-bold ${
+                            link.status_code >= 500
+                              ? "bg-red-600"
+                              : link.status_code >= 400
+                              ? "bg-orange-500"
+                              : "bg-gray-500"
+                          }`}
+                        >
                           {link.status_code}
                         </span>
-                        <span className="text-sm font-mono">
+                        <span className="text-sm font-mono truncate text-gray-700">
                           {link.link_url}
                         </span>
+                      </div>
+                      <div className="text-xs text-gray-500 ml-2">
+                        {link.status_code >= 500
+                          ? "Server Error"
+                          : link.status_code >= 400
+                          ? "Client Error"
+                          : "Unknown"}
                       </div>
                     </div>
                   ))}
@@ -940,14 +1197,6 @@ function App() {
             )}
           </CardContent>
         </Card>
-
-        <div className="mt-6 text-center text-gray-500">
-          <p>✅ Full-stack integration complete • Live data from Go backend</p>
-          <p className="text-sm">
-            Features: JWT Auth, Real-time polling, API integration, Error
-            handling
-          </p>
-        </div>
       </div>
     </div>
   );
