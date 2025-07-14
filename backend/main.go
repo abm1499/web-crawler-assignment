@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/net/html"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -53,6 +55,28 @@ type BrokenLink struct {
 // Request/Response types
 type CrawlRequest struct {
 	URL string `json:"url" binding:"required"`
+}
+
+type BulkActionRequest struct {
+	URLIDs []uint `json:"url_ids" binding:"required"`
+	Action string `json:"action" binding:"required"` // delete, rerun
+}
+
+type PaginationRequest struct {
+	Page     int    `json:"page" form:"page"`
+	PageSize int    `json:"page_size" form:"page_size"`
+	Sort     string `json:"sort" form:"sort"`
+	Order    string `json:"order" form:"order"`
+	Search   string `json:"search" form:"search"`
+	Filter   string `json:"filter" form:"filter"`
+}
+
+type PaginatedResponse struct {
+	Data       interface{} `json:"data"`
+	Total      int64       `json:"total"`
+	Page       int         `json:"page"`
+	PageSize   int         `json:"page_size"`
+	TotalPages int         `json:"total_pages"`
 }
 
 // Global variables
@@ -200,6 +224,293 @@ func login(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+}
+
+// Web Crawling Engine
+func crawlURL(urlStr string) (*URL, []BrokenLink, error) {
+	// Find existing URL record instead of creating a new one
+	var urlRecord URL
+	if err := db.Where("url = ?", urlStr).First(&urlRecord).Error; err != nil {
+		// If URL doesn't exist, create it
+		urlRecord = URL{
+			URL:    urlStr,
+			Status: "running",
+		}
+		if err := db.Create(&urlRecord).Error; err != nil {
+			return nil, nil, fmt.Errorf("failed to save URL: %w", err)
+		}
+	} else {
+		// Update existing record to running status
+		urlRecord.Status = "running"
+		db.Save(&urlRecord)
+	}
+
+	log.Printf("Starting to crawl URL: %s (ID: %d)", urlStr, urlRecord.ID)
+
+	// Fetch the page
+	resp, err := http.Get(urlStr)
+	if err != nil {
+		urlRecord.Status = "error"
+		urlRecord.ErrorMessage = err.Error()
+		db.Save(&urlRecord)
+		log.Printf("Failed to fetch URL %s: %v", urlStr, err)
+		return &urlRecord, nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		urlRecord.Status = "error"
+		urlRecord.ErrorMessage = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		db.Save(&urlRecord)
+		log.Printf("HTTP error for URL %s: %d", urlStr, resp.StatusCode)
+		return &urlRecord, nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	// Parse HTML
+	doc, err := html.Parse(resp.Body)
+	if err != nil {
+		urlRecord.Status = "error"
+		urlRecord.ErrorMessage = "Failed to parse HTML"
+		db.Save(&urlRecord)
+		log.Printf("Failed to parse HTML for URL %s: %v", urlStr, err)
+		return &urlRecord, nil, err
+	}
+
+	log.Printf("Successfully parsed HTML for URL: %s", urlStr)
+
+	// Reset counters before analysis
+	urlRecord.H1Count = 0
+	urlRecord.H2Count = 0
+	urlRecord.H3Count = 0
+	urlRecord.H4Count = 0
+	urlRecord.H5Count = 0
+	urlRecord.H6Count = 0
+	urlRecord.InternalLinks = 0
+	urlRecord.ExternalLinks = 0
+	urlRecord.HasLoginForm = false
+
+	// Analyze the document
+	analyzeDocument(doc, &urlRecord, urlStr)
+
+	log.Printf("Analysis completed for URL %s: H1=%d, H2=%d, Internal=%d, External=%d",
+		urlStr, urlRecord.H1Count, urlRecord.H2Count, urlRecord.InternalLinks, urlRecord.ExternalLinks)
+
+	// Delete existing broken links for this URL
+	db.Where("url_id = ?", urlRecord.ID).Delete(&BrokenLink{})
+
+	// Find broken links
+	brokenLinks := findBrokenLinks(doc, urlStr, urlRecord.ID)
+	urlRecord.InaccessibleLinks = len(brokenLinks)
+
+	log.Printf("Found %d broken links for URL: %s", len(brokenLinks), urlStr)
+
+	// Update status to done
+	urlRecord.Status = "done"
+	urlRecord.ErrorMessage = "" // Clear any previous errors
+	db.Save(&urlRecord)
+
+	log.Printf("Crawling completed successfully for URL: %s", urlStr)
+
+	return &urlRecord, brokenLinks, nil
+}
+
+func analyzeDocument(n *html.Node, urlRecord *URL, baseURL string) {
+	if n.Type == html.ElementNode {
+		switch n.Data {
+		case "html":
+			// Check for HTML version
+			for _, attr := range n.Attr {
+				if attr.Key == "version" {
+					urlRecord.HTMLVersion = attr.Val
+				}
+			}
+			// Default to HTML5 if no version specified
+			if urlRecord.HTMLVersion == "" {
+				urlRecord.HTMLVersion = "HTML5"
+			}
+		case "title":
+			if n.FirstChild != nil {
+				urlRecord.Title = n.FirstChild.Data
+			}
+		case "h1":
+			urlRecord.H1Count++
+		case "h2":
+			urlRecord.H2Count++
+		case "h3":
+			urlRecord.H3Count++
+		case "h4":
+			urlRecord.H4Count++
+		case "h5":
+			urlRecord.H5Count++
+		case "h6":
+			urlRecord.H6Count++
+		case "a":
+			// Analyze links
+			for _, attr := range n.Attr {
+				if attr.Key == "href" {
+					if isInternalLink(attr.Val, baseURL) {
+						urlRecord.InternalLinks++
+					} else {
+						urlRecord.ExternalLinks++
+					}
+				}
+			}
+		case "form":
+			// Check for login form
+			if hasLoginForm(n) {
+				urlRecord.HasLoginForm = true
+			}
+		}
+	}
+
+	// Check DOCTYPE for HTML version
+	if n.Type == html.DoctypeNode {
+		doctype := strings.ToLower(n.Data)
+		if strings.Contains(doctype, "html") {
+			if strings.Contains(doctype, "4.01") {
+				urlRecord.HTMLVersion = "HTML 4.01"
+			} else if strings.Contains(doctype, "xhtml") {
+				urlRecord.HTMLVersion = "XHTML"
+			} else {
+				urlRecord.HTMLVersion = "HTML5"
+			}
+		}
+	}
+
+	// Recursively analyze child nodes
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		analyzeDocument(c, urlRecord, baseURL)
+	}
+}
+
+func isInternalLink(href, baseURL string) bool {
+	if href == "" || strings.HasPrefix(href, "#") {
+		return true
+	}
+
+	if strings.HasPrefix(href, "/") {
+		return true
+	}
+
+	linkURL, err := url.Parse(href)
+	if err != nil {
+		return false
+	}
+
+	baseURLParsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+
+	return linkURL.Host == baseURLParsed.Host || linkURL.Host == ""
+}
+
+func hasLoginForm(n *html.Node) bool {
+	// Check for password input fields
+	if n.Type == html.ElementNode && n.Data == "input" {
+		for _, attr := range n.Attr {
+			if attr.Key == "type" && attr.Val == "password" {
+				return true
+			}
+		}
+	}
+
+	// Check for common login form patterns
+	for _, attr := range n.Attr {
+		if attr.Key == "id" || attr.Key == "class" || attr.Key == "name" {
+			val := strings.ToLower(attr.Val)
+			if strings.Contains(val, "login") || strings.Contains(val, "signin") || strings.Contains(val, "auth") {
+				return true
+			}
+		}
+	}
+
+	// Recursively check child nodes
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if hasLoginForm(c) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func findBrokenLinks(n *html.Node, baseURL string, urlID uint) []BrokenLink {
+	var brokenLinks []BrokenLink
+	var links []string
+
+	// Collect all links
+	collectLinks(n, &links)
+
+	// Test each link
+	for _, link := range links {
+		if link == "" || strings.HasPrefix(link, "#") || strings.HasPrefix(link, "mailto:") || strings.HasPrefix(link, "tel:") {
+			continue
+		}
+
+		fullURL := resolveURL(link, baseURL)
+		if fullURL == "" {
+			continue
+		}
+
+		// Make HEAD request to check if link is accessible
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+		}
+
+		resp, err := client.Head(fullURL)
+		if err != nil {
+			// Try GET request if HEAD fails
+			resp, err = client.Get(fullURL)
+			if err != nil {
+				continue
+			}
+		}
+
+		if resp.StatusCode >= 400 {
+			brokenLink := BrokenLink{
+				URLID:      urlID,
+				LinkURL:    fullURL,
+				StatusCode: resp.StatusCode,
+			}
+			brokenLinks = append(brokenLinks, brokenLink)
+			db.Create(&brokenLink)
+		}
+	}
+
+	return brokenLinks
+}
+
+func collectLinks(n *html.Node, links *[]string) {
+	if n.Type == html.ElementNode && n.Data == "a" {
+		for _, attr := range n.Attr {
+			if attr.Key == "href" {
+				*links = append(*links, attr.Val)
+			}
+		}
+	}
+
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		collectLinks(c, links)
+	}
+}
+
+func resolveURL(href, baseURL string) string {
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		return href
+	}
+
+	baseURLParsed, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+
+	linkURL, err := url.Parse(href)
+	if err != nil {
+		return ""
+	}
+
+	return baseURLParsed.ResolveReference(linkURL).String()
 }
 
 // API Handlers (basic CRUD - no crawling yet)
