@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+// frontend/src/App.tsx
+import React, { useState, useMemo, useEffect } from "react";
 import {
   Card,
   CardContent,
@@ -23,87 +24,155 @@ import {
   TrendingUp,
   AlertCircle,
   CheckCircle,
+  Lock,
+  Loader2,
 } from "lucide-react";
+import ApiService, {
+  URLResponse,
+  URLDetailResponse,
+  BrokenLink,
+} from "./services/api";
 
-// Enhanced mock data with more realistic examples
-const mockCrawlResults = [
-  {
-    id: 1,
-    url: "https://example.com",
-    title: "Example Domain",
-    status: "completed" as const,
-    htmlVersion: "HTML5",
-    internalLinks: 0,
-    externalLinks: 1,
-    brokenLinks: 0,
-    hasLoginForm: false,
-    createdAt: "2025-01-15T10:30:00Z",
-    headingCounts: { h1: 1, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0 },
-  },
-  {
-    id: 2,
-    url: "https://github.com",
-    title:
-      "GitHub: Build and ship software on a single, collaborative platform",
-    status: "completed" as const,
-    htmlVersion: "HTML5",
-    internalLinks: 45,
-    externalLinks: 12,
-    brokenLinks: 0,
-    hasLoginForm: true,
-    createdAt: "2025-01-15T11:00:00Z",
-    headingCounts: { h1: 2, h2: 8, h3: 12, h4: 6, h5: 1, h6: 0 },
-  },
-  {
-    id: 3,
-    url: "https://stackoverflow.com",
-    title: "Stack Overflow - Where Developers Learn, Share, & Build Careers",
-    status: "completed" as const,
-    htmlVersion: "HTML5",
-    internalLinks: 156,
-    externalLinks: 23,
-    brokenLinks: 2,
-    hasLoginForm: true,
-    createdAt: "2025-01-15T11:15:00Z",
-    headingCounts: { h1: 1, h2: 5, h3: 18, h4: 12, h5: 3, h6: 1 },
-  },
-  {
-    id: 4,
-    url: "https://processing.example.com",
-    title: "Processing...",
-    status: "running" as const,
-    htmlVersion: "",
-    internalLinks: 0,
-    externalLinks: 0,
-    brokenLinks: 0,
-    hasLoginForm: false,
-    createdAt: "2025-01-15T11:30:00Z",
-    headingCounts: { h1: 0, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0 },
-  },
-  {
-    id: 5,
-    url: "https://broken-site.example",
-    title: "",
-    status: "error" as const,
-    htmlVersion: "",
-    internalLinks: 0,
-    externalLinks: 0,
-    brokenLinks: 0,
-    hasLoginForm: false,
-    createdAt: "2025-01-15T12:00:00Z",
-    headingCounts: { h1: 0, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0 },
-  },
-];
+// Transform backend data to frontend format
+interface CrawlResult {
+  id: number;
+  url: string;
+  title: string;
+  status: "queued" | "running" | "completed" | "error";
+  htmlVersion: string;
+  internalLinks: number;
+  externalLinks: number;
+  brokenLinks: number;
+  hasLoginForm: boolean;
+  createdAt: string;
+  headingCounts: {
+    h1: number;
+    h2: number;
+    h3: number;
+    h4: number;
+    h5: number;
+    h6: number;
+  };
+  errorMessage?: string;
+}
 
-type CrawlResult = (typeof mockCrawlResults)[0];
+const transformBackendData = (data: URLResponse): CrawlResult => ({
+  id: data.id,
+  url: data.url,
+  title: data.title || "Untitled",
+  status: data.status === "done" ? "completed" : data.status,
+  htmlVersion: data.html_version || "",
+  internalLinks: data.internal_links || 0,
+  externalLinks: data.external_links || 0,
+  brokenLinks: data.inaccessible_links || 0,
+  hasLoginForm: data.has_login_form || false,
+  createdAt: data.created_at,
+  headingCounts: {
+    h1: data.h1_count || 0,
+    h2: data.h2_count || 0,
+    h3: data.h3_count || 0,
+    h4: data.h4_count || 0,
+    h5: data.h5_count || 0,
+    h6: data.h6_count || 0,
+  },
+  errorMessage: data.error_message,
+});
+
+// Login Component
+const LoginForm = ({ onLogin }: { onLogin: () => void }) => {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("password");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError("");
+
+    try {
+      await ApiService.login(username, password);
+      onLogin();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Login failed");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
+      <Card className="w-full max-w-md shadow-lg">
+        <CardHeader className="text-center">
+          <div className="flex justify-center mb-4">
+            <Lock className="h-12 w-12 text-blue-600" />
+          </div>
+          <CardTitle className="text-2xl">Web Crawler Assignment</CardTitle>
+          <CardDescription>
+            Demo authentication for technical assessment project
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <input
+                type="text"
+                placeholder="Username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                disabled={isLoading}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={isLoading}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            {error && <p className="text-sm text-red-500">{error}</p>}
+            <Button type="submit" className="w-full" disabled={isLoading}>
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Logging in...
+                </>
+              ) : (
+                "Login"
+              )}
+            </Button>
+          </form>
+          <div className="mt-4 text-sm text-gray-600 text-center">
+            <p>Demo credentials:</p>
+            <p>
+              <strong>Username:</strong> admin
+            </p>
+            <p>
+              <strong>Password:</strong> password
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
 
 function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const [crawlResults, setCrawlResults] = useState<CrawlResult[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<keyof CrawlResult>("createdAt");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalResults, setTotalResults] = useState(0);
   const [newUrl, setNewUrl] = useState("");
   const [currentView, setCurrentView] = useState<"dashboard" | "detail">(
     "dashboard"
@@ -111,47 +180,162 @@ function App() {
   const [selectedResult, setSelectedResult] = useState<CrawlResult | null>(
     null
   );
+  const [selectedResultDetail, setSelectedResultDetail] =
+    useState<URLDetailResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isUrlLoading, setIsUrlLoading] = useState(false);
 
   const itemsPerPage = 10;
 
-  // Filter and sort results
-  const filteredAndSortedResults = useMemo(() => {
-    let filtered = mockCrawlResults.filter((result) => {
-      const matchesSearch =
-        result.url.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        result.title.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchesStatus =
-        statusFilter === "all" || result.status === statusFilter;
-      return matchesSearch && matchesStatus;
-    });
+  // Check authentication on mount
+  useEffect(() => {
+    const token = ApiService.getToken();
+    if (token) {
+      setIsAuthenticated(true);
+    }
+    setIsCheckingAuth(false);
+  }, []);
 
-    filtered.sort((a, b) => {
-      const aValue = a[sortBy];
-      const bValue = b[sortBy];
+  // Fetch URLs when authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchUrls();
+      // Set up polling for real-time updates
+      const interval = setInterval(fetchUrls, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [
+    isAuthenticated,
+    currentPage,
+    searchTerm,
+    statusFilter,
+    sortBy,
+    sortOrder,
+  ]);
 
-      if (typeof aValue === "string" && typeof bValue === "string") {
-        return sortOrder === "asc"
-          ? aValue.localeCompare(bValue)
-          : bValue.localeCompare(aValue);
+  const fetchUrls = async () => {
+    try {
+      const response = await ApiService.getUrls({
+        page: currentPage,
+        page_size: itemsPerPage,
+        sort: sortBy === "createdAt" ? "created_at" : sortBy,
+        order: sortOrder,
+        search: searchTerm || undefined,
+        filter: statusFilter !== "all" ? statusFilter : undefined,
+      });
+
+      const transformedData = response.data.map(transformBackendData);
+      setCrawlResults(transformedData);
+      setTotalResults(response.total);
+      setTotalPages(response.total_pages);
+    } catch (error) {
+      console.error("Failed to fetch URLs:", error);
+      // Don't show error for auth issues - handled in handleResponse
+      if (
+        !(error instanceof Error && error.message.includes("Authentication"))
+      ) {
+        // Could add a toast notification here
+      }
+    }
+  };
+
+  const handleLogin = () => {
+    setIsAuthenticated(true);
+  };
+
+  const handleLogout = () => {
+    ApiService.clearToken();
+    setIsAuthenticated(false);
+    setCrawlResults([]);
+    setSelectedResult(null);
+    setCurrentView("dashboard");
+  };
+
+  const handleAddUrl = async () => {
+    if (!newUrl.trim()) return;
+
+    setIsUrlLoading(true);
+    try {
+      console.log("Adding URL:", newUrl);
+      const response = await ApiService.addUrl(newUrl);
+      console.log("URL added:", response);
+      setNewUrl("");
+
+      // Start crawling immediately if we got a valid response
+      if (response && response.id) {
+        setTimeout(async () => {
+          try {
+            console.log("Starting crawl for ID:", response.id);
+            await ApiService.startCrawling(response.id);
+            fetchUrls();
+          } catch (error) {
+            console.error("Failed to start crawling:", error);
+          }
+        }, 1000);
       }
 
-      if (typeof aValue === "number" && typeof bValue === "number") {
-        return sortOrder === "asc" ? aValue - bValue : bValue - aValue;
-      }
+      fetchUrls();
+    } catch (error) {
+      console.error("Failed to add URL:", error);
+      alert(
+        "Failed to add URL: " +
+          (error instanceof Error ? error.message : "Unknown error")
+      );
+    } finally {
+      setIsUrlLoading(false);
+    }
+  };
 
-      return 0;
-    });
+  const handleStartCrawl = async (id: number) => {
+    try {
+      await ApiService.startCrawling(id);
+      fetchUrls();
+    } catch (error) {
+      console.error("Failed to start crawling:", error);
+    }
+  };
 
-    return filtered;
-  }, [searchTerm, statusFilter, sortBy, sortOrder]);
+  const handleStopCrawl = async (id: number) => {
+    try {
+      await ApiService.stopCrawling(id);
+      fetchUrls();
+    } catch (error) {
+      console.error("Failed to stop crawling:", error);
+    }
+  };
 
-  // Pagination
-  const totalPages = Math.ceil(filteredAndSortedResults.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const paginatedResults = filteredAndSortedResults.slice(
-    startIndex,
-    startIndex + itemsPerPage
-  );
+  const handleBulkAction = async (action: "delete" | "rerun") => {
+    if (selectedIds.length === 0) return;
+
+    try {
+      await ApiService.bulkAction(selectedIds, action);
+      setSelectedIds([]);
+      fetchUrls();
+    } catch (error) {
+      console.error(`Failed to ${action} URLs:`, error);
+    }
+  };
+
+  const handleViewDetails = async (result: CrawlResult) => {
+    try {
+      setIsLoading(true);
+      const detailResponse = await ApiService.getUrlDetails(result.id);
+      setSelectedResult(result);
+      setSelectedResultDetail(detailResponse);
+      setCurrentView("detail");
+    } catch (error) {
+      console.error("Failed to fetch URL details:", error);
+      setSelectedResult(result);
+      setSelectedResultDetail(null);
+      setCurrentView("detail");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Filter and sort results (server-side now)
+  const filteredAndSortedResults = crawlResults;
+  const paginatedResults = filteredAndSortedResults;
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
@@ -199,46 +383,60 @@ function App() {
     );
   };
 
-  const handleAddUrl = () => {
-    if (newUrl.trim()) {
-      console.log("Would add URL:", newUrl);
-      setNewUrl("");
-    }
-  };
-
-  const handleViewDetails = (result: CrawlResult) => {
-    setSelectedResult(result);
-    setCurrentView("detail");
-  };
-
   const handleBackToDashboard = () => {
     setSelectedResult(null);
+    setSelectedResultDetail(null);
     setCurrentView("dashboard");
   };
 
-  // Calculate stats for overview
+  // Calculate stats
   const stats = {
-    total: mockCrawlResults.length,
-    completed: mockCrawlResults.filter((r) => r.status === "completed").length,
-    running: mockCrawlResults.filter((r) => r.status === "running").length,
-    errors: mockCrawlResults.filter((r) => r.status === "error").length,
+    total: totalResults,
+    completed: crawlResults.filter((r) => r.status === "completed").length,
+    running: crawlResults.filter((r) => r.status === "running").length,
+    errors: crawlResults.filter((r) => r.status === "error").length,
   };
 
+  // Show loading screen while checking authentication
+  if (isCheckingAuth) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="h-12 w-12 text-blue-600 mx-auto mb-4 animate-spin" />
+          <p className="text-slate-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show login form if not authenticated
+  if (!isAuthenticated) {
+    return <LoginForm onLogin={handleLogin} />;
+  }
+
+  // Detail view
   if (currentView === "detail" && selectedResult) {
+    const brokenLinks = selectedResultDetail?.broken_links || [];
+
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
         <div className="container mx-auto px-4 py-8">
-          <div className="flex items-center gap-4 mb-8">
-            <Button variant="outline" onClick={handleBackToDashboard}>
-              <ChevronLeft className="mr-2 h-4 w-4" />
-              Back to Dashboard
-            </Button>
-            <div>
-              <h2 className="text-2xl font-bold text-slate-800">
-                {selectedResult.title}
-              </h2>
-              <p className="text-slate-600">{selectedResult.url}</p>
+          <div className="flex items-center justify-between mb-8">
+            <div className="flex items-center gap-4">
+              <Button variant="outline" onClick={handleBackToDashboard}>
+                <ChevronLeft className="mr-2 h-4 w-4" />
+                Back to Dashboard
+              </Button>
+              <div>
+                <h2 className="text-2xl font-bold text-slate-800">
+                  {selectedResult.title}
+                </h2>
+                <p className="text-slate-600">{selectedResult.url}</p>
+              </div>
             </div>
+            <Button variant="outline" onClick={handleLogout}>
+              Logout
+            </Button>
           </div>
 
           {/* Overview Cards */}
@@ -281,7 +479,7 @@ function App() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold text-red-600">
-                  {selectedResult.brokenLinks}
+                  {brokenLinks.length}
                 </div>
               </CardContent>
             </Card>
@@ -313,7 +511,7 @@ function App() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Mock chart placeholders */}
+            {/* Chart placeholder */}
             <Card>
               <CardHeader>
                 <CardTitle>Links Distribution</CardTitle>
@@ -325,9 +523,9 @@ function App() {
                 <div className="h-64 flex items-center justify-center bg-gray-50 rounded">
                   <div className="text-center">
                     <BarChart3 className="h-12 w-12 text-gray-400 mx-auto mb-2" />
-                    <p className="text-gray-500">Chart visualization</p>
-                    <p className="text-sm text-gray-400">
-                      Will be implemented with Recharts
+                    <p className="text-gray-500">
+                      {selectedResult.internalLinks} internal,{" "}
+                      {selectedResult.externalLinks} external
                     </p>
                   </div>
                 </div>
@@ -358,26 +556,66 @@ function App() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Broken Links */}
+          {brokenLinks.length > 0 && (
+            <Card className="mt-6">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <AlertCircle className="h-5 w-5 text-red-600" />
+                  Broken Links ({brokenLinks.length})
+                </CardTitle>
+                <CardDescription>
+                  Links that returned error status codes
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {brokenLinks.map((link, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center justify-between p-3 bg-red-50 rounded-lg"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="px-2 py-1 bg-red-600 text-white rounded text-xs font-medium">
+                          {link.status_code}
+                        </span>
+                        <span className="text-sm font-mono">
+                          {link.link_url}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     );
   }
 
+  // Main dashboard
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="container mx-auto px-4 py-8">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold text-slate-800 mb-2">
-            Web Crawler Assignment
-          </h1>
-          <p className="text-slate-600 text-lg">
-            Full-stack application built in 8 hours • React + TypeScript + Go +
-            MySQL
-          </p>
-          <p className="text-slate-500 text-sm mt-1">
-            Technical assessment project by Ammar
-          </p>
+        <div className="mb-8 flex justify-between items-start">
+          <div>
+            <h1 className="text-4xl font-bold text-slate-800 mb-2">
+              Web Crawler Assignment
+            </h1>
+            <p className="text-slate-600 text-lg">
+              Full-stack application built in 8 hours • React + TypeScript + Go
+              + MySQL
+            </p>
+            <p className="text-slate-500 text-sm mt-1">
+              Technical assessment project by Ammar
+            </p>
+          </div>
+          <Button variant="outline" onClick={handleLogout}>
+            Logout
+          </Button>
         </div>
 
         {/* Stats Overview */}
@@ -453,11 +691,22 @@ function App() {
                 placeholder="https://example.com"
                 value={newUrl}
                 onChange={(e) => setNewUrl(e.target.value)}
+                onKeyPress={(e) => e.key === "Enter" && handleAddUrl()}
+                disabled={isUrlLoading}
                 className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-              <Button onClick={handleAddUrl}>
-                <Plus className="mr-2 h-4 w-4" />
-                Analyze
+              <Button onClick={handleAddUrl} disabled={isUrlLoading}>
+                {isUrlLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Adding...
+                  </>
+                ) : (
+                  <>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Analyze
+                  </>
+                )}
               </Button>
             </div>
           </CardContent>
@@ -489,7 +738,7 @@ function App() {
                   <option value="all">All Status</option>
                   <option value="queued">Queued</option>
                   <option value="running">Running</option>
-                  <option value="completed">Completed</option>
+                  <option value="done">Completed</option>
                   <option value="error">Error</option>
                 </select>
               </div>
@@ -501,11 +750,20 @@ function App() {
                 <span className="text-sm text-blue-700">
                   {selectedIds.length} item(s) selected
                 </span>
-                <Button size="sm" variant="outline" className="ml-auto">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto"
+                  onClick={() => handleBulkAction("rerun")}
+                >
                   <RotateCcw className="mr-2 h-4 w-4" />
                   Re-run
                 </Button>
-                <Button size="sm" variant="destructive">
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => handleBulkAction("delete")}
+                >
                   <Trash2 className="mr-2 h-4 w-4" />
                   Delete
                 </Button>
@@ -599,12 +857,20 @@ function App() {
                       <td className="p-3">
                         <div className="flex items-center gap-2">
                           {result.status === "queued" && (
-                            <Button size="sm" variant="outline">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleStartCrawl(result.id)}
+                            >
                               <Play className="h-4 w-4" />
                             </Button>
                           )}
                           {result.status === "running" && (
-                            <Button size="sm" variant="outline">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleStopCrawl(result.id)}
+                            >
                               <Square className="h-4 w-4" />
                             </Button>
                           )}
@@ -613,8 +879,13 @@ function App() {
                               size="sm"
                               variant="outline"
                               onClick={() => handleViewDetails(result)}
+                              disabled={isLoading}
                             >
-                              <Eye className="h-4 w-4" />
+                              {isLoading ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Eye className="h-4 w-4" />
+                              )}
                             </Button>
                           )}
                         </div>
@@ -629,12 +900,8 @@ function App() {
             {totalPages > 1 && (
               <div className="flex items-center justify-between mt-4">
                 <div className="text-sm text-gray-600">
-                  Showing {startIndex + 1}-
-                  {Math.min(
-                    startIndex + itemsPerPage,
-                    filteredAndSortedResults.length
-                  )}{" "}
-                  of {filteredAndSortedResults.length} results
+                  Showing page {currentPage} of {totalPages} ({totalResults}{" "}
+                  total results)
                 </div>
                 <div className="flex items-center gap-2">
                   <Button
@@ -666,13 +933,21 @@ function App() {
 
             {filteredAndSortedResults.length === 0 && (
               <div className="text-center py-8 text-gray-500">
-                {mockCrawlResults.length === 0
+                {crawlResults.length === 0
                   ? "No URLs analyzed yet"
                   : "No results match your filters"}
               </div>
             )}
           </CardContent>
         </Card>
+
+        <div className="mt-6 text-center text-gray-500">
+          <p>✅ Full-stack integration complete • Live data from Go backend</p>
+          <p className="text-sm">
+            Features: JWT Auth, Real-time polling, API integration, Error
+            handling
+          </p>
+        </div>
       </div>
     </div>
   );

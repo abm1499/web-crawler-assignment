@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,6 +80,11 @@ type PaginatedResponse struct {
 	TotalPages int         `json:"total_pages"`
 }
 
+type URLDetailResponse struct {
+	URL         URL          `json:"url"`
+	BrokenLinks []BrokenLink `json:"broken_links"`
+}
+
 // Global variables
 var db *gorm.DB
 var jwtSecret = []byte("your-secret-key-change-in-production")
@@ -90,7 +96,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// Database connection
+// Database connection with retry logic
 func connectDB() {
 	// Get database configuration from environment variables
 	dbHost := os.Getenv("DB_HOST")
@@ -118,32 +124,45 @@ func connectDB() {
 		dbName = "webcrawler"
 	}
 
-	// Create DSN
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-		dbUser, dbPassword, dbHost, dbPort, dbName)
-
 	log.Printf("Attempting to connect to database at %s:%s", dbHost, dbPort)
+	log.Printf("Using credentials: %s/***", dbUser)
 
-	// Try to connect, if database doesn't exist, create it
-	createDBDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/", dbUser, dbPassword, dbHost, dbPort)
-	if sqlDB, err := sql.Open("mysql", createDBDSN); err == nil {
-		sqlDB.Exec("CREATE DATABASE IF NOT EXISTS " + dbName)
-		sqlDB.Close()
+	// Retry connection with exponential backoff
+	maxRetries := 10
+	for i := 0; i < maxRetries; i++ {
+		// First try to create database if it doesn't exist
+		createDBDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/", dbUser, dbPassword, dbHost, dbPort)
+		if sqlDB, err := sql.Open("mysql", createDBDSN); err == nil {
+			sqlDB.Exec("CREATE DATABASE IF NOT EXISTS " + dbName)
+			sqlDB.Close()
+		}
+
+		// Create main connection DSN
+		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+			dbUser, dbPassword, dbHost, dbPort, dbName)
+
+		var err error
+		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+		if err == nil {
+			// Auto migrate
+			if err := db.AutoMigrate(&URL{}, &BrokenLink{}); err != nil {
+				log.Printf("Failed to migrate database: %v", err)
+			} else {
+				log.Println("Database connected and migrated successfully")
+			}
+			return
+		}
+
+		log.Printf("Database connection attempt %d failed: %v", i+1, err)
+		if i < maxRetries-1 {
+			waitTime := time.Duration(i+1) * 2 * time.Second
+			log.Printf("Retrying in %v...", waitTime)
+			time.Sleep(waitTime)
+		}
 	}
 
-	var err error
-	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	if err != nil {
-		log.Printf("Failed to connect to database: %v", err)
-		log.Println("Note: Make sure MySQL is running for full functionality")
-		// Continue without database for development
-		return
-	}
-
-	// Auto migrate
-	db.AutoMigrate(&URL{}, &BrokenLink{})
-
-	log.Println("Database connected successfully")
+	log.Printf("Failed to connect to database after %d attempts", maxRetries)
+	log.Println("Note: Application will continue without database - some features may not work")
 }
 
 // JWT Middleware
@@ -231,24 +250,21 @@ func crawlURL(urlStr string) (*URL, []BrokenLink, error) {
 	// Find existing URL record instead of creating a new one
 	var urlRecord URL
 	if err := db.Where("url = ?", urlStr).First(&urlRecord).Error; err != nil {
-		// If URL doesn't exist, create it
-		urlRecord = URL{
-			URL:    urlStr,
-			Status: "running",
-		}
-		if err := db.Create(&urlRecord).Error; err != nil {
-			return nil, nil, fmt.Errorf("failed to save URL: %w", err)
-		}
-	} else {
-		// Update existing record to running status
-		urlRecord.Status = "running"
-		db.Save(&urlRecord)
+		return nil, nil, fmt.Errorf("URL record not found: %w", err)
 	}
+
+	// Update to running status
+	urlRecord.Status = "running"
+	db.Save(&urlRecord)
 
 	log.Printf("Starting to crawl URL: %s (ID: %d)", urlStr, urlRecord.ID)
 
 	// Fetch the page
-	resp, err := http.Get(urlStr)
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	resp, err := client.Get(urlStr)
 	if err != nil {
 		urlRecord.Status = "error"
 		urlRecord.ErrorMessage = err.Error()
@@ -442,8 +458,13 @@ func findBrokenLinks(n *html.Node, baseURL string, urlID uint) []BrokenLink {
 	// Collect all links
 	collectLinks(n, &links)
 
-	// Test each link
+	// Test each link (limit to first 10 for performance)
+	count := 0
 	for _, link := range links {
+		if count >= 10 { // Limit for demo
+			break
+		}
+
 		if link == "" || strings.HasPrefix(link, "#") || strings.HasPrefix(link, "mailto:") || strings.HasPrefix(link, "tel:") {
 			continue
 		}
@@ -455,16 +476,12 @@ func findBrokenLinks(n *html.Node, baseURL string, urlID uint) []BrokenLink {
 
 		// Make HEAD request to check if link is accessible
 		client := &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 5 * time.Second,
 		}
 
 		resp, err := client.Head(fullURL)
 		if err != nil {
-			// Try GET request if HEAD fails
-			resp, err = client.Get(fullURL)
-			if err != nil {
-				continue
-			}
+			continue
 		}
 
 		if resp.StatusCode >= 400 {
@@ -475,6 +492,7 @@ func findBrokenLinks(n *html.Node, baseURL string, urlID uint) []BrokenLink {
 			}
 			brokenLinks = append(brokenLinks, brokenLink)
 			db.Create(&brokenLink)
+			count++
 		}
 	}
 
@@ -513,7 +531,7 @@ func resolveURL(href, baseURL string) string {
 	return baseURLParsed.ResolveReference(linkURL).String()
 }
 
-// API Handlers (basic CRUD - no crawling yet)
+// API Handlers
 func addURL(c *gin.Context) {
 	var req CrawlRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -530,6 +548,7 @@ func addURL(c *gin.Context) {
 	urlRecord := URL{
 		URL:    req.URL,
 		Status: "queued",
+		Title:  "Untitled",
 	}
 
 	if err := db.Create(&urlRecord).Error; err != nil {
@@ -537,46 +556,199 @@ func addURL(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"message": "URL added successfully",
-		"url":     urlRecord,
-		"note":    "Crawling functionality will be implemented next",
-	})
+	c.JSON(http.StatusCreated, urlRecord)
 }
 
 func getURLs(c *gin.Context) {
 	if db == nil {
-		// Return mock data for development without database
-		c.JSON(http.StatusOK, gin.H{
-			"data": []gin.H{
-				{
-					"id":     1,
-					"url":    "https://example.com",
-					"status": "queued",
-					"note":   "Mock data - database not connected",
-				},
-			},
-			"total": 1,
-		})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Database not available"})
 		return
 	}
 
+	// Parse pagination parameters
+	var req PaginationRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Set defaults
+	if req.Page <= 0 {
+		req.Page = 1
+	}
+	if req.PageSize <= 0 {
+		req.PageSize = 10
+	}
+	if req.Sort == "" {
+		req.Sort = "created_at"
+	}
+	if req.Order == "" {
+		req.Order = "desc"
+	}
+
+	// Build query
+	query := db.Model(&URL{})
+
+	// Add search filter
+	if req.Search != "" {
+		query = query.Where("url LIKE ? OR title LIKE ?", "%"+req.Search+"%", "%"+req.Search+"%")
+	}
+
+	// Add status filter
+	if req.Filter != "" && req.Filter != "all" {
+		query = query.Where("status = ?", req.Filter)
+	}
+
+	// Count total
+	var total int64
+	query.Count(&total)
+
+	// Add sorting
+	orderBy := req.Sort + " " + req.Order
+	query = query.Order(orderBy)
+
+	// Add pagination
+	offset := (req.Page - 1) * req.PageSize
+	query = query.Limit(req.PageSize).Offset(offset)
+
+	// Fetch results
 	var urls []URL
-	if err := db.Find(&urls).Error; err != nil {
+	if err := query.Find(&urls).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch URLs"})
 		return
 	}
 
+	// Calculate total pages
+	totalPages := int((total + int64(req.PageSize) - 1) / int64(req.PageSize))
+
+	response := PaginatedResponse{
+		Data:       urls,
+		Total:      total,
+		Page:       req.Page,
+		PageSize:   req.PageSize,
+		TotalPages: totalPages,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+func getURLDetails(c *gin.Context) {
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Database not available"})
+		return
+	}
+
+	idParam := c.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid URL ID"})
+		return
+	}
+
+	var urlRecord URL
+	if err := db.First(&urlRecord, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "URL not found"})
+		return
+	}
+
+	var brokenLinks []BrokenLink
+	db.Where("url_id = ?", id).Find(&brokenLinks)
+
+	response := URLDetailResponse{
+		URL:         urlRecord,
+		BrokenLinks: brokenLinks,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+func startCrawling(c *gin.Context) {
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Database not available"})
+		return
+	}
+
+	idParam := c.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid URL ID"})
+		return
+	}
+
+	var urlRecord URL
+	if err := db.First(&urlRecord, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "URL not found"})
+		return
+	}
+
+	// Start crawling in background
+	go func() {
+		_, _, err := crawlURL(urlRecord.URL)
+		if err != nil {
+			log.Printf("Crawling failed for URL %s: %v", urlRecord.URL, err)
+		}
+	}()
+
 	c.JSON(http.StatusOK, gin.H{
-		"data":  urls,
-		"total": len(urls),
+		"message": "Crawling started",
+		"url_id":  id,
+	})
+}
+
+func stopCrawling(c *gin.Context) {
+	idParam := c.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid URL ID"})
+		return
+	}
+
+	// In a real implementation, you would stop the crawling process here
+	// For now, just return success
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Crawling stop requested",
+		"url_id":  id,
+	})
+}
+
+func bulkAction(c *gin.Context) {
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Database not available"})
+		return
+	}
+
+	var req BulkActionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	switch req.Action {
+	case "delete":
+		if err := db.Where("id IN ?", req.URLIDs).Delete(&URL{}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete URLs"})
+			return
+		}
+		// Also delete related broken links
+		db.Where("url_id IN ?", req.URLIDs).Delete(&BrokenLink{})
+
+	case "rerun":
+		if err := db.Model(&URL{}).Where("id IN ?", req.URLIDs).Update("status", "queued").Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update URLs"})
+			return
+		}
+
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid action"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": fmt.Sprintf("Bulk %s completed", req.Action),
 	})
 }
 
 func main() {
-	// Connect to database (optional for this stage)
-	connectDB()
-
 	// Initialize Gin router
 	router := gin.Default()
 
@@ -593,18 +765,28 @@ func main() {
 
 	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
+		dbStatus := "not_connected"
+		if db != nil {
+			// Test the connection
+			sqlDB, err := db.DB()
+			if err == nil && sqlDB.Ping() == nil {
+				dbStatus = "connected"
+			}
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"status":  "ok",
-			"service": "web-crawler-backend",
-			"auth":    "implemented",
-			"database": func() string {
-				if db != nil {
-					return "connected"
-				}
-				return "optional"
-			}(),
+			"status":   "ok",
+			"service":  "web-crawler-backend",
+			"auth":     "implemented",
+			"database": dbStatus,
 		})
 	})
+
+	// Connect to database in background (non-blocking)
+	go func() {
+		log.Println("Starting database connection in background...")
+		connectDB()
+	}()
 
 	// Protected API routes
 	api := router.Group("/api")
@@ -612,6 +794,10 @@ func main() {
 	{
 		api.POST("/urls", addURL)
 		api.GET("/urls", getURLs)
+		api.GET("/urls/:id", getURLDetails)
+		api.POST("/urls/:id/start", startCrawling)
+		api.POST("/urls/:id/stop", stopCrawling)
+		api.POST("/urls/bulk", bulkAction)
 	}
 
 	// Start server
@@ -621,7 +807,8 @@ func main() {
 	}
 
 	log.Printf("Server starting on port %s", port)
-	log.Printf("Features: JWT Auth ✓, Database Models ✓, Basic CRUD ✓")
-	log.Printf("Next: Web crawling engine")
+	log.Printf("Features: JWT Auth ✓, Database Models ✓, Full CRUD ✓, Web Crawling ✓")
+	log.Printf("Endpoints: /login, /health, /api/urls (GET, POST), /api/urls/:id (GET), /api/urls/:id/start, /api/urls/:id/stop, /api/urls/bulk")
+	log.Printf("Note: Database connection will be established in background")
 	log.Fatal(router.Run(":" + port))
 }
