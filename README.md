@@ -1,4 +1,4 @@
-# Web Crawler Assignment
+# Web Crawler Application
 
 A full-stack web crawler application built for technical assessment, demonstrating modern development practices and comprehensive feature implementation.
 
